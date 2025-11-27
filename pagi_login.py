@@ -26,13 +26,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def open_login_modal(page) -> None:
-    await page.goto(DEFAULT_URL)
-    await page.wait_for_timeout(1500)
-    await page.click("a.login-trigger")
-    await page.wait_for_selector("#loginForm", timeout=10000)
-
-
 async def fill_credentials(page, username: str, password: str) -> None:
     await page.fill("#username", username)
     await page.fill("#password", password)
@@ -42,6 +35,62 @@ async def submit_login(page) -> None:
     await page.click("#continueBtn")
 
 
+async def open_login_modal(page, url: str) -> None:
+    """Navigate to the login form using several fallback selectors.
+
+    The Pagi site has changed its HTML multiple times. We try a handful of
+    selectors so the script keeps working even if the login trigger's class or
+    tag changes, and we provide clearer errors when the modal cannot be found.
+    """
+
+    await page.goto(url, wait_until="load")
+    await page.wait_for_timeout(1500)
+
+    login_triggers = [
+        "a.login-trigger",
+        "button.login-trigger",
+        "a[href*='login']",
+        "button:has-text('כניסה לחשבונך')",
+        "text=כניסה לחשבונך",
+    ]
+
+    for selector in login_triggers:
+        locator = page.locator(selector).first
+        try:
+            await locator.wait_for(timeout=3000)
+        except PlaywrightTimeoutError:
+            continue
+
+        try:
+            await locator.click()
+            break
+        except PlaywrightTimeoutError:
+            continue
+    else:
+        raise PlaywrightTimeoutError(
+            "Login trigger not found on the page. Confirm the URL is correct and the page is fully loaded."
+        )
+
+    form_selectors = [
+        "#loginForm",
+        "form#loginForm",
+        "form[action*='login']",
+        "input#username",
+        "input[name='username']",
+    ]
+
+    for selector in form_selectors:
+        try:
+            await page.wait_for_selector(selector, timeout=5000)
+            return
+        except PlaywrightTimeoutError:
+            continue
+
+    raise PlaywrightTimeoutError(
+        "Login form did not appear after clicking the trigger. It may be blocked by another dialog or the page layout has changed."
+    )
+
+
 async def main(username: str, password: str, url: str, stay_open: bool) -> None:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
@@ -49,10 +98,7 @@ async def main(username: str, password: str, url: str, stay_open: bool) -> None:
         page = await context.new_page()
 
         try:
-            await page.goto(url)
-            await page.wait_for_timeout(1500)
-            await page.click("a.login-trigger")
-            await page.wait_for_selector("#loginForm", timeout=10000)
+            await open_login_modal(page, url)
         except PlaywrightTimeoutError:
             await browser.close()
             raise SystemExit(
